@@ -43,8 +43,8 @@ module C2CR
           case cursor.kind
           when .macro_definition? then visit_define(cursor, translation_unit)
           when .typedef_decl?     then visit_typedef(cursor)
-          when .enum_decl?        then visit_enum(cursor) unless cursor.spelling.empty?
-          when .struct_decl?      then visit_struct(cursor) unless cursor.spelling.empty?
+          when .enum_decl?        then visit_enum(cursor) # unless cursor.spelling.empty?
+          when .struct_decl?      then visit_struct(cursor) # unless cursor.spelling.empty?
           when .union_decl?       then visit_union(cursor)
           when .function_decl?    then visit_function(cursor)
           when .var_decl?         then visit_var(cursor)
@@ -311,57 +311,86 @@ module C2CR
       suffix
     end
 
-    def visit_struct(cursor, spelling = cursor.spelling)
+    def visit_struct(cursor, spelling = cursor.spelling, nillable = false)
       members_count = 0
 
       definition = String.build do |str|
-        str.puts "  struct #{Constant.to_crystal(spelling)}"
+        if !nillable
+          str.puts "  struct #{Constant.to_crystal(spelling)}"
+        end
+        or_nil =
+          if nillable
+            "| Nil"
+          else
+            ""
+          end
 
         cursor.visit_children do |c|
           members_count += 1
-
           case c.kind
           when .field_decl?
-            str.puts "    #{c.spelling.underscore} : #{Type.to_crystal(c.type)}"
+            str.puts "    #{c.spelling.underscore} : #{Type.to_crystal(c.type)} #{or_nil}"
           when .struct_decl?
             if c.type.kind.record?
               # skip
             else
               STDERR.puts [:TODO, :inner_struct, c].inspect
             end
+          # Asumes anon
+          when .union_decl?
+            str.puts visit_union(c, c.spelling, true)
           else
             STDERR.puts "WARNING: unexpected #{c.kind} within #{cursor.kind} (visit_struct)"
           end
           Clang::ChildVisitResult::Continue
         end
-
-        str.puts "  end"
+        if !nillable
+          str.puts "  end"
+        end
       end
 
-      if members_count == 0
-        puts "  type #{Constant.to_crystal(spelling)} = Void"
-      else
-        puts definition
+      output =
+        if members_count == 0
+          "  type #{Constant.to_crystal(spelling)} = Void"
+        else
+          definition
+        end
+      if !nillable
+        puts output
       end
+      output
     end
 
-    def visit_union(cursor, spelling = cursor.spelling)
+    def visit_union(cursor, spelling = cursor.spelling, nillable = false)
       # anonymous? already processed?
-      return if spelling.empty?
+      return "" if spelling.empty? && !nillable
 
-      puts "  union #{Constant.to_crystal(spelling)}"
-
-      cursor.visit_children do |c|
-        case c.kind
-        when .field_decl?
-          puts "    #{c.spelling.underscore} : #{Type.to_crystal(c.type)}"
-        else
-          STDERR.puts "WARNING: unexpected #{c.kind} within #{cursor.kind} (visit_union)"
+      str = String.build do |str|
+        if !nillable
+          str.puts "  union #{Constant.to_crystal(spelling)}"
         end
-        Clang::ChildVisitResult::Continue
-      end
 
-      puts "  end"
+        cursor.visit_children do |c|
+          case c.kind
+          when .field_decl?
+            str.puts "    #{c.spelling.underscore} : #{Type.to_crystal(c.type)}"
+          # Assumes anon
+          when .struct_decl?
+            str.puts visit_struct(c, c.spelling, true)
+          else
+            STDERR.puts "WARNING: unexpected #{c.kind} within #{cursor.kind} (visit_union)"
+          end
+          Clang::ChildVisitResult::Continue
+        end
+
+        if !nillable
+          puts "  end"
+        end
+      end
+      if !nillable
+        puts str
+      end
+      str
     end
 
     def visit_function(cursor)
